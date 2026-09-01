@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Notes</title>
+<style>
+  :root{
+    --bg:#000000;
+    --text:#F5F5F0;
+    --dim:#8A8A85;
+    --accent:#5FD4A0;
+    --danger:#E0665A;
+    --line:#2A2A28;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    overflow:hidden;
+  }
+  #app{ height:100vh; display:flex; flex-direction:column; }
+
+  /* ---- Top bar ---- */
+  .bar{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 16px 10px;
+    flex-shrink:0;
+  }
+  .bar h1{ font-size:17px; font-weight:600; margin:0; letter-spacing:0.2px; }
+  .bar .count{ font-size:13px; color:var(--dim); }
+
+  /* ---- List view ---- */
+  #listView{ flex:1; display:flex; flex-direction:column; min-height:0; }
+  #notes{ flex:1; overflow-y:auto; padding:0 12px 12px; }
+  .note{
+    padding:12px 10px;
+    border-bottom:1px solid var(--line);
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .note .snippet{ font-size:15px; line-height:1.35; }
+  .note .meta{ font-size:11px; color:var(--dim); }
+  .empty{
+    flex:1; display:flex; align-items:center; justify-content:center;
+    text-align:center; padding:0 30px; color:var(--dim); font-size:14px;
+  }
+
+  .fab{
+    margin:14px auto 18px;
+    width:64px; height:64px; border-radius:50%;
+    background:var(--accent); color:#00281B;
+    display:flex; align-items:center; justify-content:center;
+    font-size:30px; font-weight:300; border:none;
+    flex-shrink:0;
+  }
+  .fab:active{ transform:scale(0.94); }
+
+  /* ---- Editor view ---- */
+  #editView{ flex:1; display:none; flex-direction:column; min-height:0; padding:0 16px 16px; }
+  #editView.active{ display:flex; }
+  #listView.hidden{ display:none; }
+
+  #transcript{
+    flex:1; overflow-y:auto;
+    font-size:19px; line-height:1.5;
+    padding:6px 2px;
+  }
+  #transcript .placeholder{ color:var(--dim); }
+  #interim{ color:var(--dim); }
+
+  .status{
+    text-align:center; font-size:12px; color:var(--dim);
+    height:16px; margin-bottom:4px;
+  }
+  .status.live{ color:var(--accent); }
+
+  .controls{
+    display:flex; align-items:center; justify-content:center;
+    gap:22px; padding-top:10px; flex-shrink:0;
+  }
+  .ctrl-btn{
+    border:none; background:none; color:var(--text);
+    font-size:13px; display:flex; flex-direction:column; align-items:center; gap:6px;
+  }
+  .mic{
+    width:58px; height:58px; border-radius:50%;
+    border:2px solid var(--dim);
+    display:flex; align-items:center; justify-content:center;
+    font-size:24px;
+  }
+  .mic.recording{ border-color:var(--accent); background:rgba(95,212,160,0.12); color:var(--accent); }
+  .ctrl-btn.save .mic{ border-color:var(--accent); color:var(--accent); }
+  .ctrl-btn.discard .mic{ border-color:var(--danger); color:var(--danger); }
+
+  .unsupported{
+    flex:1; display:flex; align-items:center; justify-content:center;
+    text-align:center; color:var(--dim); font-size:14px; padding:0 24px;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- LIST VIEW -->
+  <div id="listView">
+    <div class="bar">
+      <h1>Notes</h1>
+      <span class="count" id="noteCount">0</span>
+    </div>
+    <div id="notes"></div>
+    <button class="fab" id="newNoteBtn" aria-label="New note">+</button>
+  </div>
+
+  <!-- EDITOR VIEW -->
+  <div id="editView">
+    <div class="bar">
+      <h1>New note</h1>
+      <span></span>
+    </div>
+    <div class="status" id="status">Tap the mic to start</div>
+    <div id="transcript"><span class="placeholder">Your words will appear here…</span></div>
+    <div class="controls">
+      <button class="ctrl-btn discard" id="discardBtn">
+        <div class="mic">✕</div> Discard
+      </button>
+      <button class="ctrl-btn" id="micBtn">
+        <div class="mic" id="micCircle">●</div> Dictate
+      </button>
+      <button class="ctrl-btn save" id="saveBtn">
+        <div class="mic">✓</div> Save
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const STORAGE_KEY = "glasses_notes_v1";
+  const listView = document.getElementById('listView');
+  const editView = document.getElementById('editView');
+  const notesEl = document.getElementById('notes');
+  const noteCount = document.getElementById('noteCount');
+  const transcriptEl = document.getElementById('transcript');
+  const statusEl = document.getElementById('status');
+  const micBtn = document.getElementById('micBtn');
+  const micCircle = document.getElementById('micCircle');
+
+  let notes = [];
+  let finalText = "";
+  let recognizing = false;
+  let recognition = null;
+
+  function loadNotes(){
+    try{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      notes = raw ? JSON.parse(raw) : [];
+    }catch(e){ notes = []; }
+  }
+  function saveNotes(){
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(notes)); }catch(e){}
+  }
+
+  function renderList(){
+    noteCount.textContent = notes.length;
+    notesEl.innerHTML = "";
+    if(notes.length === 0){
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = "No notes yet. Tap + and start talking.";
+      notesEl.appendChild(empty);
+      return;
+    }
+    notes.slice().reverse().forEach(n=>{
+      const row = document.createElement('div');
+      row.className = 'note';
+      const snip = document.createElement('div');
+      snip.className = 'snippet';
+      snip.textContent = n.text.length > 80 ? n.text.slice(0,80) + "…" : n.text;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = new Date(n.ts).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+      row.appendChild(snip);
+      row.appendChild(meta);
+      notesEl.appendChild(row);
+    });
+  }
+
+  function openEditor(){
+    finalText = "";
+    transcriptEl.innerHTML = '<span class="placeholder">Your words will appear here…</span>';
+    statusEl.textContent = "Tap the mic to start";
+    statusEl.classList.remove('live');
+    listView.classList.add('hidden');
+    editView.classList.add('active');
+  }
+  function closeEditor(){
+    stopRecognition();
+    editView.classList.remove('active');
+    listView.classList.remove('hidden');
+    renderList();
+  }
+
+  // ---- Speech recognition (dictation) ----
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if(!SpeechRecognition){
+    document.getElementById('app').innerHTML =
+      '<div class="unsupported">Dictation isn\'t supported in this browser view. Try opening this app through the Meta AI app on Ray-Ban Display, which supports on-device speech input.</div>';
+  } else {
+    recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = function(event){
+      let interim = "";
+      for(let i = event.resultIndex; i < event.results.length; i++){
+        const chunk = event.results[i][0].transcript;
+        if(event.results[i].isFinal){
+          finalText += chunk + " ";
+        } else {
+          interim += chunk;
+        }
+      }
+      renderTranscript(interim);
+    };
+
+    recognition.onerror = function(){
+      statusEl.textContent = "Didn't catch that — tap the mic to retry";
+      statusEl.classList.remove('live');
+    };
+
+    recognition.onend = function(){
+      if(recognizing){
+        // auto-restart so a brief pause doesn't end dictation
+        try{ recognition.start(); }catch(e){}
+      }
+    };
+  }
+
+  function renderTranscript(interim){
+    transcriptEl.innerHTML = "";
+    const finalSpan = document.createElement('span');
+    finalSpan.textContent = finalText;
+    transcriptEl.appendChild(finalSpan);
+    if(interim){
+      const interimSpan = document.createElement('span');
+      interimSpan.id = 'interim';
+      interimSpan.textContent = interim;
+      transcriptEl.appendChild(interimSpan);
+    }
+    if(!finalText && !interim){
+      transcriptEl.innerHTML = '<span class="placeholder">Your words will appear here…</span>';
+    }
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
+  function startRecognition(){
+    if(!recognition) return;
+    recognizing = true;
+    micBtn.querySelector('.mic').classList.add('recording');
+    statusEl.textContent = "Listening…";
+    statusEl.classList.add('live');
+    try{ recognition.start(); }catch(e){}
+  }
+  function stopRecognition(){
+    if(!recognition) return;
+    recognizing = false;
+    micBtn.querySelector('.mic').classList.remove('recording');
+    statusEl.textContent = "Paused — tap mic to resume";
+    statusEl.classList.remove('live');
+    try{ recognition.stop(); }catch(e){}
+  }
+
+  micBtn.addEventListener('click', function(){
+    if(recognizing){ stopRecognition(); } else { startRecognition(); }
+  });
+
+  document.getElementById('newNoteBtn').addEventListener('click', openEditor);
+
+  document.getElementById('discardBtn').addEventListener('click', closeEditor);
+
+  document.getElementById('saveBtn').addEventListener('click', function(){
+    const text = finalText.trim();
+    if(text.length > 0){
+      notes.push({ text: text, ts: Date.now() });
+      saveNotes();
+    }
+    closeEditor();
+  });
+
+  loadNotes();
+  renderList();
+})();
+</script>
+</body>
+</html>
